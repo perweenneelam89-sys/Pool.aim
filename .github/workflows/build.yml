@@ -1,0 +1,649 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
+
+      - name: Write project files
+        run: |
+          mkdir -p app/src/main/java/com/venice/poolaim
+          mkdir -p app/src/main/res/layout
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "PoolAim"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.venice.poolaim"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.venice.poolaim"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              buildTypes { release { isMinifyEnabled = false } }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application
+                  android:allowBackup="true"
+                  android:label="Pool Aim"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".OverlayService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Aim overlay for pool games" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/layout/activity_main.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:gravity="center"
+              android:padding="28dp"
+              android:background="#101418">
+
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Pool Aim"
+                  android:textSize="26sp"
+                  android:textStyle="bold"
+                  android:textColor="#E6F4FF" />
+
+              <TextView
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="14dp"
+                  android:text="1. Overlay permission do\n2. Start dabao\n3. Game kholo, CALIBRATE se table ke 4 kone align karo\n4. AIM pe jao, cue ball drag karo, line se aim karo\n5. LOCK dabao aur shot maaro"
+                  android:textColor="#9AB0C0"
+                  android:lineSpacingExtra="4dp" />
+
+              <Button
+                  android:id="@+id/btnPerm"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="24dp"
+                  android:text="1. Overlay permission" />
+
+              <Button
+                  android:id="@+id/btnStart"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="10dp"
+                  android:text="2. Start" />
+
+              <Button
+                  android:id="@+id/btnStop"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="10dp"
+                  android:text="Stop" />
+          </LinearLayout>
+          EOF
+
+          cat > app/src/main/java/com/venice/poolaim/MainActivity.kt <<'EOF'
+          package com.venice.poolaim
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                  }
+
+                  findViewById<Button>(R.id.btnPerm).setOnClickListener {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                          Uri.parse("package:$packageName")))
+                  }
+
+                  findViewById<Button>(R.id.btnStart).setOnClickListener {
+                      if (!Settings.canDrawOverlays(this)) {
+                          Toast.makeText(this, "Pehle overlay permission do", Toast.LENGTH_SHORT).show()
+                          return@setOnClickListener
+                      }
+                      startForegroundService(Intent(this, OverlayService::class.java))
+                      moveTaskToBack(true)
+                  }
+
+                  findViewById<Button>(R.id.btnStop).setOnClickListener {
+                      stopService(Intent(this, OverlayService::class.java))
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/venice/poolaim/OverlayService.kt <<'EOF'
+          package com.venice.poolaim
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.graphics.PixelFormat
+          import android.os.IBinder
+          import android.view.Gravity
+          import android.view.WindowManager
+
+          class OverlayService : Service() {
+              private lateinit var wm: WindowManager
+              private var view: AimView? = null
+              private var params: WindowManager.LayoutParams? = null
+              private var locked = false
+
+              override fun onBind(i: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  getSystemService(NotificationManager::class.java)
+                      .createNotificationChannel(NotificationChannel(CH, "Overlay", NotificationManager.IMPORTANCE_LOW))
+                  startForeground(1, buildNotification())
+
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  val p = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                          WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  p.gravity = Gravity.TOP or Gravity.START
+
+                  val v = AimView(this)
+                  v.onExit = { stopSelf() }
+                  v.onLock = { lock() }
+                  wm.addView(v, p)
+                  view = v
+                  params = p
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_UNLOCK) unlock()
+                  return START_STICKY
+              }
+
+              private fun lock() {
+                  val p = params ?: return
+                  locked = true
+                  p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                  wm.updateViewLayout(view, p)
+                  getSystemService(NotificationManager::class.java).notify(1, buildNotification())
+              }
+
+              private fun unlock() {
+                  val p = params ?: return
+                  locked = false
+                  p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                  wm.updateViewLayout(view, p)
+                  getSystemService(NotificationManager::class.java).notify(1, buildNotification())
+              }
+
+              private fun buildNotification(): Notification {
+                  val pi = PendingIntent.getService(this, 1,
+                      Intent(this, OverlayService::class.java).setAction(ACTION_UNLOCK),
+                      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                  return Notification.Builder(this, CH)
+                      .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                      .setContentTitle("Pool Aim")
+                      .setContentText(if (locked) "Locked - taps game tak" else "Editing")
+                      .setOngoing(true)
+                      .addAction(Notification.Action.Builder(null, "Unlock", pi).build())
+                      .build()
+              }
+
+              override fun onDestroy() {
+                  view?.let { runCatching { wm.removeView(it) } }
+                  super.onDestroy()
+              }
+
+              companion object {
+                  private const val CH = "overlay"
+                  private const val ACTION_UNLOCK = "com.venice.poolaim.UNLOCK"
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/venice/poolaim/AimView.kt <<'EOF'
+          package com.venice.poolaim
+
+          import android.annotation.SuppressLint
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.DashPathEffect
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.PointF
+          import android.graphics.RectF
+          import android.view.MotionEvent
+          import android.view.View
+          import kotlin.math.atan2
+          import kotlin.math.cos
+          import kotlin.math.hypot
+          import kotlin.math.max
+          import kotlin.math.min
+          import kotlin.math.sin
+
+          @SuppressLint("ViewConstructor")
+          class AimView(context: Context) : View(context) {
+
+              var onExit: (() -> Unit)? = null
+              var onLock: (() -> Unit)? = null
+
+              private enum class Mode { CALIBRATE, AIM }
+              private enum class Drag { NONE, TL, TR, BL, BR, TOP, BOTTOM, LEFT, RIGHT, CUE, AIM }
+
+              private var table: RectF? = null
+              private var cue = PointF()
+              private var angle = 0f
+              private var mode = Mode.CALIBRATE
+              private var showFan = true
+              private var drag = Drag.NONE
+              private var pressedBtn = -1
+
+              private val d = resources.displayMetrics.density
+              private val ballR: Float get() = max(6f * d, (table?.width() ?: 0f) / 88f)
+              private val pocketR: Float get() = ballR * 1.9f
+
+              private val btnCal = RectF()
+              private val btnFan = RectF()
+              private val btnLock = RectF()
+              private val btnMinus = RectF()
+              private val btnPlus = RectF()
+
+              private val pFrame = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 2f * d
+                  color = Color.parseColor("#8060D8FF")
+              }
+              private val pPath = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 3f * d
+                  color = Color.parseColor("#FF66E0FF")
+              }
+              private val pGhost = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 2f * d
+                  color = Color.parseColor("#FF66E0FF")
+              }
+              private val pFan = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 1f * d
+                  color = Color.parseColor("#40B9F0FF")
+              }
+              private val pPocket = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 2f * d
+                  color = Color.parseColor("#66FFFFFF")
+              }
+              private val pPocketHit = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 4f * d
+                  color = Color.parseColor("#FFFFD24A")
+              }
+              private val pCue = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 3f * d
+                  color = Color.parseColor("#FFFF5566")
+              }
+              private val pHandle = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL; color = Color.parseColor("#CC00FFC8")
+              }
+              private val pBtn = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL; color = Color.parseColor("#CC1A222B")
+              }
+              private val pBtnOn = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL; color = Color.parseColor("#CC0E7C66")
+              }
+              private val pText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE; textSize = 12f * d; textAlign = Paint.Align.CENTER
+              }
+              private val pCall = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.parseColor("#FFFFD24A"); textSize = 15f * d
+                  textAlign = Paint.Align.CENTER; isFakeBoldText = true
+              }
+              private val pDash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 2f * d
+                  color = Color.parseColor("#A0FF66E0FF")
+                  pathEffect = DashPathEffect(floatArrayOf(8f * d, 6f * d), 0f)
+              }
+
+              override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                  val bh = 42 * d
+                  btnCal.set(8 * d, 8 * d, 8 * d + 92 * d, 8 * d + bh)
+                  btnFan.set(btnCal.right + 6 * d, 8 * d, btnCal.right + 6 * d + 66 * d, 8 * d + bh)
+                  btnLock.set(w - 8 * d - 76 * d, 8 * d, w - 8 * d, 8 * d + bh)
+                  val cy = h - 58 * d
+                  btnMinus.set(w / 2f - 104 * d, cy - 21 * d, w / 2f - 60 * d, cy + 21 * d)
+                  btnPlus.set(w / 2f + 60 * d, cy - 21 * d, w / 2f + 104 * d, cy + 21 * d)
+
+                  if (table == null) {
+                      val tw = w * 0.86f
+                      val th = min(h * 0.58f, tw * 2f)
+                      val l = (w - tw) / 2f
+                      val t = h * 0.24f
+                      table = RectF(l, t, l + tw, t + th)
+                      cue.set(table!!.centerX(), table!!.bottom - 140 * d)
+                  }
+              }
+
+              private fun pockets(): List<PointF> {
+                  val r = table ?: return emptyList()
+                  return listOf(
+                      PointF(r.left, r.top), PointF(r.right, r.top),
+                      PointF(r.left, r.bottom), PointF(r.right, r.bottom),
+                      PointF(r.left, r.centerY()), PointF(r.right, r.centerY())
+                  )
+              }
+
+              private val pocketNames = arrayOf(
+                  "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Left-Side", "Right-Side"
+              )
+
+              private fun distToSeg(p: PointF, a: PointF, b: PointF): Float {
+                  val abx = b.x - a.x
+                  val aby = b.y - a.y
+                  val len2 = abx * abx + aby * aby
+                  if (len2 < 0.001f) return hypot(p.x - a.x, p.y - a.y)
+                  var t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2
+                  t = t.coerceIn(0f, 1f)
+                  return hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t))
+              }
+
+              private fun trace(sx: Float, sy: Float, dx0: Float, dy0: Float, bounces: Int): Pair<MutableList<PointF>, Int> {
+                  val r = table ?: return Pair(mutableListOf(), -1)
+                  val ins = ballR
+                  val l = r.left + ins
+                  val t = r.top + ins
+                  val rt = r.right - ins
+                  val b = r.bottom - ins
+                  val pts = mutableListOf(PointF(sx, sy))
+                  var px = sx
+                  var py = sy
+                  var dx = dx0
+                  var dy = dy0
+                  val pk = pockets()
+
+                  repeat(bounces) {
+                      var best = Float.MAX_VALUE
+                      var axis = 0
+                      if (dx > 0.0001f) { val v = (rt - px) / dx; if (v > 0 && v < best) { best = v; axis = 1 } }
+                      if (dx < -0.0001f) { val v = (l - px) / dx; if (v > 0 && v < best) { best = v; axis = 1 } }
+                      if (dy > 0.0001f) { val v = (b - py) / dy; if (v > 0 && v < best) { best = v; axis = 2 } }
+                      if (dy < -0.0001f) { val v = (t - py) / dy; if (v > 0 && v < best) { best = v; axis = 2 } }
+                      if (best == Float.MAX_VALUE) return Pair(pts, -1)
+
+                      val ex = px + dx * best
+                      val ey = py + dy * best
+                      val a = PointF(px, py)
+                      val e = PointF(ex, ey)
+
+                      for (i in pk.indices) {
+                          if (distToSeg(pk[i], a, e) < pocketR) {
+                              pts.add(e)
+                              return Pair(pts, i)
+                          }
+                      }
+                      pts.add(e)
+                      if (axis == 1) dx = -dx else dy = -dy
+                      px = ex
+                      py = ey
+                  }
+                  return Pair(pts, -1)
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  super.onDraw(canvas)
+                  val r = table ?: return
+
+                  canvas.drawRect(r, pFrame)
+
+                  if (showFan) {
+                      for (i in 0 until 36) {
+                          val a = Math.toRadians(i * 10.0).toFloat()
+                          val res = trace(cue.x, cue.y, cos(a), sin(a), 2)
+                          val path = Path()
+                          val p0 = res.first
+                          if (p0.size > 1) {
+                              path.moveTo(p0[0].x, p0[0].y)
+                              for (k in 1 until p0.size) path.lineTo(p0[k].x, p0[k].y)
+                              canvas.drawPath(path, pFan)
+                          }
+                      }
+                  }
+
+                  val a = Math.toRadians(angle.toDouble()).toFloat()
+                  val res = trace(cue.x, cue.y, cos(a), sin(a), 8)
+                  val pts = res.first
+                  val hit = res.second
+
+                  if (pts.size > 1) {
+                      val path = Path()
+                      path.moveTo(pts[0].x, pts[0].y)
+                      for (k in 1 until pts.size) path.lineTo(pts[k].x, pts[k].y)
+                      canvas.drawPath(path, pPath)
+                      canvas.drawPath(path, pDash)
+
+                      val end = pts.last()
+                      canvas.drawCircle(end.x, end.y, ballR, pGhost)
+
+                      if (pts.size > 2) {
+                          val f = pts[1]
+                          canvas.drawCircle(f.x, f.y, ballR, pGhost)
+                      }
+                  }
+
+                  for ((i, p) in pockets().withIndex()) {
+                      canvas.drawCircle(p.x, p.y, pocketR, if (i == hit) pPocketHit else pPocket)
+                  }
+
+                  canvas.drawCircle(cue.x, cue.y, ballR, pCue)
+
+                  val label = if (hit >= 0) "POCKET: " + pocketNames[hit] else "no pocket on this line"
+                  canvas.drawText(label, width / 2f, height - 92 * d, pCall)
+
+                  if (mode == Mode.CALIBRATE) {
+                      for (p in handlePoints(r)) canvas.drawCircle(p.x, p.y, 9 * d, pHandle)
+                  }
+
+                  drawBtn(canvas, btnCal, if (mode == Mode.CALIBRATE) "CALIBRATE" else "AIM", mode == Mode.CALIBRATE)
+                  drawBtn(canvas, btnFan, "FAN", showFan)
+                  drawBtn(canvas, btnLock, "LOCK", false)
+                  drawBtn(canvas, btnMinus, " - ", false)
+                  drawBtn(canvas, btnPlus, " + ", false)
+              }
+
+              private fun drawBtn(c: Canvas, r: RectF, txt: String, on: Boolean) {
+                  c.drawRoundRect(r, 8 * d, 8 * d, if (on) pBtnOn else pBtn)
+                  val ty = r.centerY() - (pText.descent() + pText.ascent()) / 2f
+                  c.drawText(txt, r.centerX(), ty, pText)
+              }
+
+              private fun handlePoints(r: RectF): List<PointF> = listOf(
+                  PointF(r.left, r.top), PointF(r.right, r.top),
+                  PointF(r.left, r.bottom), PointF(r.right, r.bottom),
+                  PointF(r.centerX(), r.top), PointF(r.centerX(), r.bottom),
+                  PointF(r.left, r.centerY()), PointF(r.right, r.centerY())
+              )
+
+              override fun onTouchEvent(e: MotionEvent): Boolean {
+                  val r = table ?: return false
+                  val x = e.x
+                  val y = e.y
+
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          pressedBtn = -1
+                          when {
+                              btnCal.contains(x, y) -> pressedBtn = 0
+                              btnFan.contains(x, y) -> pressedBtn = 1
+                              btnLock.contains(x, y) -> pressedBtn = 2
+                              btnMinus.contains(x, y) -> pressedBtn = 3
+                              btnPlus.contains(x, y) -> pressedBtn = 4
+                          }
+                          if (pressedBtn >= 0) { invalidate(); return true }
+
+                          if (mode == Mode.CALIBRATE) {
+                              val hs = handlePoints(r)
+                              val names = listOf(Drag.TL, Drag.TR, Drag.BL, Drag.BR, Drag.TOP, Drag.BOTTOM, Drag.LEFT, Drag.RIGHT)
+                              var bestI = -1
+                              var bestD = 46 * d
+                              for (i in hs.indices) {
+                                  val dd = hypot(x - hs[i].x, y - hs[i].y)
+                                  if (dd < bestD) { bestD = dd; bestI = i }
+                              }
+                              drag = if (bestI >= 0) names[bestI] else Drag.NONE
+                          } else {
+                              drag = if (hypot(x - cue.x, y - cue.y) < 44 * d) Drag.CUE else Drag.AIM
+                          }
+                          return true
+                      }
+
+                      MotionEvent.ACTION_MOVE -> {
+                          when (drag) {
+                              Drag.TL -> { r.left = x; r.top = y }
+                              Drag.TR -> { r.right = x; r.top = y }
+                              Drag.BL -> { r.left = x; r.bottom = y }
+                              Drag.BR -> { r.right = x; r.bottom = y }
+                              Drag.TOP -> r.top = y
+                              Drag.BOTTOM -> r.bottom = y
+                              Drag.LEFT -> r.left = x
+                              Drag.RIGHT -> r.right = x
+                              Drag.CUE -> {
+                                  cue.x = x.coerceIn(r.left, r.right)
+                                  cue.y = y.coerceIn(r.top, r.bottom)
+                              }
+                              Drag.AIM -> angle = Math.toDegrees(atan2(y - cue.y, x - cue.x).toDouble()).toFloat()
+                              Drag.NONE -> {}
+                          }
+                          if (r.left > r.right) { val tmp = r.left; r.left = r.right; r.right = tmp }
+                          if (r.top > r.bottom) { val tmp = r.top; r.top = r.bottom; r.bottom = tmp }
+                          invalidate()
+                          return true
+                      }
+
+                      MotionEvent.ACTION_UP -> {
+                          when (pressedBtn) {
+                              0 -> mode = if (mode == Mode.CALIBRATE) Mode.AIM else Mode.CALIBRATE
+                              1 -> showFan = !showFan
+                              2 -> onLock?.invoke()
+                              3 -> angle -= 0.2f
+                              4 -> angle += 0.2f
+                          }
+                          pressedBtn = -1
+                          drag = Drag.NONE
+                          invalidate()
+                          return true
+                      }
+                  }
+                  return true
+              }
+          }
+          EOF
+
+      - name: Accept licenses
+        run: yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+
+      - name: Install SDK
+        run: sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null || true
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk PoolAim.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PoolAim-apk
+          path: PoolAim.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: PoolAim build ${{ github.run_number }}
+          files: PoolAim.apk

@@ -5,9 +5,6 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,9 +16,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.4'
+          gradle-version: '8.7'
+
+      - name: Ensure Android SDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Write project files
         run: |
@@ -41,14 +43,15 @@ jobs:
 
           cat > build.gradle.kts <<'EOF'
           plugins {
-              id("com.android.application") version "8.2.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
           }
           EOF
 
           cat > gradle.properties <<'EOF'
           android.useAndroidX=true
           org.gradle.jvmargs=-Xmx2048m
+          org.gradle.daemon=false
           EOF
 
           cat > app/build.gradle.kts <<'EOF'
@@ -322,10 +325,10 @@ jobs:
               var onLock: (() -> Unit)? = null
 
               private enum class Mode { CALIBRATE, AIM }
-              private enum class Drag { NONE, TL, TR, BL, BR, TOP, BOTTOM, LEFT, RIGHT, CUE, AIM }
+              private enum class Drag { NONE, TL, TR, BL, BR, CUE, AIM }
 
               private var table: RectF? = null
-              private var cue = PointF()
+              private val cue = PointF()
               private var angle = 0f
               private var mode = Mode.CALIBRATE
               private var showFan = true
@@ -338,6 +341,7 @@ jobs:
 
               private val btnCal = RectF()
               private val btnFan = RectF()
+              private val btnExit = RectF()
               private val btnLock = RectF()
               private val btnMinus = RectF()
               private val btnPlus = RectF()
@@ -348,10 +352,6 @@ jobs:
               }
               private val pPath = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   style = Paint.Style.STROKE; strokeWidth = 3f * d
-                  color = Color.parseColor("#FF66E0FF")
-              }
-              private val pGhost = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  style = Paint.Style.STROKE; strokeWidth = 2f * d
                   color = Color.parseColor("#FF66E0FF")
               }
               private val pFan = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -386,16 +386,12 @@ jobs:
                   color = Color.parseColor("#FFFFD24A"); textSize = 15f * d
                   textAlign = Paint.Align.CENTER; isFakeBoldText = true
               }
-              private val pDash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  style = Paint.Style.STROKE; strokeWidth = 2f * d
-                  color = Color.parseColor("#A0FF66E0FF")
-                  pathEffect = DashPathEffect(floatArrayOf(8f * d, 6f * d), 0f)
-              }
 
               override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
                   val bh = 42 * d
                   btnCal.set(8 * d, 8 * d, 8 * d + 92 * d, 8 * d + bh)
                   btnFan.set(btnCal.right + 6 * d, 8 * d, btnCal.right + 6 * d + 66 * d, 8 * d + bh)
+                  btnExit.set(btnFan.right + 6 * d, 8 * d, btnFan.right + 6 * d + 46 * d, 8 * d + bh)
                   btnLock.set(w - 8 * d - 76 * d, 8 * d, w - 8 * d, 8 * d + bh)
                   val cy = h - 58 * d
                   btnMinus.set(w / 2f - 104 * d, cy - 21 * d, w / 2f - 60 * d, cy + 21 * d)
@@ -464,186 +460,153 @@ jobs:
 
                       for (i in pk.indices) {
                           if (distToSeg(pk[i], a, e) < pocketR) {
-                              pts.add(e)
+                              pts.add(pk[i])
                               return Pair(pts, i)
                           }
                       }
+
                       pts.add(e)
-                      if (axis == 1) dx = -dx else dy = -dy
                       px = ex
                       py = ey
+                      if (axis == 1) dx = -dx else dy = -dy
                   }
                   return Pair(pts, -1)
               }
 
-              override fun onDraw(canvas: Canvas) {
-                  super.onDraw(canvas)
+              private fun clampCue() {
                   val r = table ?: return
+                  cue.x = cue.x.coerceIn(r.left + ballR, r.right - ballR)
+                  cue.y = cue.y.coerceIn(r.top + ballR, r.bottom - ballR)
+              }
 
+              override fun onDraw(canvas: Canvas) {
+                  val r = table ?: return
                   canvas.drawRect(r, pFrame)
 
-                  if (showFan) {
-                      for (i in 0 until 36) {
-                          val a = Math.toRadians(i * 10.0).toFloat()
-                          val res = trace(cue.x, cue.y, cos(a), sin(a), 2)
-                          val path = Path()
-                          val p0 = res.first
-                          if (p0.size > 1) {
-                              path.moveTo(p0[0].x, p0[0].y)
-                              for (k in 1 until p0.size) path.lineTo(p0[k].x, p0[k].y)
-                              canvas.drawPath(path, pFan)
-                          }
+                  val pk = pockets()
+                  val res = trace(cue.x, cue.y, cos(angle), sin(angle), 3)
+
+                  if (showFan && mode == Mode.AIM) {
+                      for (k in -3..3) {
+                          if (k == 0) continue
+                          val a2 = angle + k * 0.05f
+                          val sub = trace(cue.x, cue.y, cos(a2), sin(a2), 2)
+                          val fp = Path()
+                          sub.first.forEachIndexed { i, p -> if (i == 0) fp.moveTo(p.x, p.y) else fp.lineTo(p.x, p.y) }
+                          canvas.drawPath(fp, pFan)
                       }
                   }
 
-                  val a = Math.toRadians(angle.toDouble()).toFloat()
-                  val res = trace(cue.x, cue.y, cos(a), sin(a), 8)
-                  val pts = res.first
-                  val hit = res.second
-
-                  if (pts.size > 1) {
-                      val path = Path()
-                      path.moveTo(pts[0].x, pts[0].y)
-                      for (k in 1 until pts.size) path.lineTo(pts[k].x, pts[k].y)
-                      canvas.drawPath(path, pPath)
-                      canvas.drawPath(path, pDash)
-
-                      val end = pts.last()
-                      canvas.drawCircle(end.x, end.y, ballR, pGhost)
-
-                      if (pts.size > 2) {
-                          val f = pts[1]
-                          canvas.drawCircle(f.x, f.y, ballR, pGhost)
-                      }
+                  for (i in pk.indices) {
+                      canvas.drawCircle(pk[i].x, pk[i].y, pocketR, if (res.second == i) pPocketHit else pPocket)
                   }
 
-                  for ((i, p) in pockets().withIndex()) {
-                      canvas.drawCircle(p.x, p.y, pocketR, if (i == hit) pPocketHit else pPocket)
-                  }
+                  val path = Path()
+                  res.first.forEachIndexed { i, p -> if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y) }
+                  canvas.drawPath(path, pPath)
 
                   canvas.drawCircle(cue.x, cue.y, ballR, pCue)
+                  val hx = cue.x + cos(angle) * ballR * 3.2f
+                  val hy = cue.y + sin(angle) * ballR * 3.2f
+                  canvas.drawCircle(hx, hy, ballR * 0.55f, pHandle)
 
-                  val label = if (hit >= 0) "POCKET: " + pocketNames[hit] else "no pocket on this line"
-                  canvas.drawText(label, width / 2f, height - 92 * d, pCall)
-
-                  if (mode == Mode.CALIBRATE) {
-                      for (p in handlePoints(r)) canvas.drawCircle(p.x, p.y, 9 * d, pHandle)
+                  if (res.second >= 0) {
+                      canvas.drawText(pocketNames[res.second], width / 2f, height - 96 * d, pCall)
                   }
 
-                  drawBtn(canvas, btnCal, if (mode == Mode.CALIBRATE) "CALIBRATE" else "AIM", mode == Mode.CALIBRATE)
+                  drawBtn(canvas, btnCal, if (mode == Mode.AIM) "AIM" else "CALIB", mode == Mode.AIM)
                   drawBtn(canvas, btnFan, "FAN", showFan)
+                  drawBtn(canvas, btnExit, "X", false)
                   drawBtn(canvas, btnLock, "LOCK", false)
-                  drawBtn(canvas, btnMinus, " - ", false)
-                  drawBtn(canvas, btnPlus, " + ", false)
+                  drawBtn(canvas, btnMinus, "-", false)
+                  drawBtn(canvas, btnPlus, "+", false)
               }
 
-              private fun drawBtn(c: Canvas, r: RectF, txt: String, on: Boolean) {
-                  c.drawRoundRect(r, 8 * d, 8 * d, if (on) pBtnOn else pBtn)
-                  val ty = r.centerY() - (pText.descent() + pText.ascent()) / 2f
-                  c.drawText(txt, r.centerX(), ty, pText)
+              private fun drawBtn(canvas: Canvas, r: RectF, label: String, on: Boolean) {
+                  canvas.drawRoundRect(r, 8f * d, 8f * d, if (on) pBtnOn else pBtn)
+                  canvas.drawText(label, r.centerX(), r.centerY() + 4f * d, pText)
               }
 
-              private fun handlePoints(r: RectF): List<PointF> = listOf(
-                  PointF(r.left, r.top), PointF(r.right, r.top),
-                  PointF(r.left, r.bottom), PointF(r.right, r.bottom),
-                  PointF(r.centerX(), r.top), PointF(r.centerX(), r.bottom),
-                  PointF(r.left, r.centerY()), PointF(r.right, r.centerY())
-              )
+              private fun hitBtn(x: Float, y: Float): Int {
+                  val rects = listOf(btnCal, btnFan, btnExit, btnLock, btnMinus, btnPlus)
+                  for (i in rects.indices) if (rects[i].contains(x, y)) return i
+                  return -1
+              }
 
+              private fun pickDrag(x: Float, y: Float): Drag {
+                  val r = table ?: return Drag.NONE
+                  if (mode == Mode.AIM) {
+                      return if (hypot(x - cue.x, y - cue.y) < ballR * 3f) Drag.CUE else Drag.AIM
+                  }
+                  val thr = 48 * d
+                  val corners = listOf(
+                      Drag.TL to PointF(r.left, r.top),
+                      Drag.TR to PointF(r.right, r.top),
+                      Drag.BL to PointF(r.left, r.bottom),
+                      Drag.BR to PointF(r.right, r.bottom)
+                  )
+                  var bestD = Float.MAX_VALUE
+                  var best = Drag.NONE
+                  for ((tag, p) in corners) {
+                      val dd = hypot(x - p.x, y - p.y)
+                      if (dd < thr && dd < bestD) { bestD = dd; best = tag }
+                  }
+                  return best
+              }
+
+              private fun applyDrag(x: Float, y: Float) {
+                  val r = table ?: return
+                  when (drag) {
+                      Drag.TL -> { r.left = min(x, r.right - 100 * d); r.top = min(y, r.bottom - 100 * d) }
+                      Drag.TR -> { r.right = max(x, r.left + 100 * d); r.top = min(y, r.bottom - 100 * d) }
+                      Drag.BL -> { r.left = min(x, r.right - 100 * d); r.bottom = max(y, r.top + 100 * d) }
+                      Drag.BR -> { r.right = max(x, r.left + 100 * d); r.bottom = max(y, r.top + 100 * d) }
+                      Drag.CUE -> { cue.set(x, y); clampCue() }
+                      Drag.AIM -> angle = atan2(y - cue.y, x - cue.x)
+                      Drag.NONE -> return
+                  }
+              }
+
+              @SuppressLint("ClickableViewAccessibility")
               override fun onTouchEvent(e: MotionEvent): Boolean {
-                  val r = table ?: return false
-                  val x = e.x
-                  val y = e.y
-
                   when (e.actionMasked) {
                       MotionEvent.ACTION_DOWN -> {
-                          pressedBtn = -1
-                          when {
-                              btnCal.contains(x, y) -> pressedBtn = 0
-                              btnFan.contains(x, y) -> pressedBtn = 1
-                              btnLock.contains(x, y) -> pressedBtn = 2
-                              btnMinus.contains(x, y) -> pressedBtn = 3
-                              btnPlus.contains(x, y) -> pressedBtn = 4
-                          }
-                          if (pressedBtn >= 0) { invalidate(); return true }
-
-                          if (mode == Mode.CALIBRATE) {
-                              val hs = handlePoints(r)
-                              val names = listOf(Drag.TL, Drag.TR, Drag.BL, Drag.BR, Drag.TOP, Drag.BOTTOM, Drag.LEFT, Drag.RIGHT)
-                              var bestI = -1
-                              var bestD = 46 * d
-                              for (i in hs.indices) {
-                                  val dd = hypot(x - hs[i].x, y - hs[i].y)
-                                  if (dd < bestD) { bestD = dd; bestI = i }
-                              }
-                              drag = if (bestI >= 0) names[bestI] else Drag.NONE
-                          } else {
-                              drag = if (hypot(x - cue.x, y - cue.y) < 44 * d) Drag.CUE else Drag.AIM
-                          }
-                          return true
+                          pressedBtn = hitBtn(e.x, e.y)
+                          if (pressedBtn != -1) { invalidate(); return true }
+                          drag = pickDrag(e.x, e.y)
+                          if (drag != Drag.NONE) { applyDrag(e.x, e.y); invalidate() }
                       }
-
-                      MotionEvent.ACTION_MOVE -> {
-                          when (drag) {
-                              Drag.TL -> { r.left = x; r.top = y }
-                              Drag.TR -> { r.right = x; r.top = y }
-                              Drag.BL -> { r.left = x; r.bottom = y }
-                              Drag.BR -> { r.right = x; r.bottom = y }
-                              Drag.TOP -> r.top = y
-                              Drag.BOTTOM -> r.bottom = y
-                              Drag.LEFT -> r.left = x
-                              Drag.RIGHT -> r.right = x
-                              Drag.CUE -> {
-                                  cue.x = x.coerceIn(r.left, r.right)
-                                  cue.y = y.coerceIn(r.top, r.bottom)
-                              }
-                              Drag.AIM -> angle = Math.toDegrees(atan2(y - cue.y, x - cue.x).toDouble()).toFloat()
-                              Drag.NONE -> {}
-                          }
-                          if (r.left > r.right) { val tmp = r.left; r.left = r.right; r.right = tmp }
-                          if (r.top > r.bottom) { val tmp = r.top; r.top = r.bottom; r.bottom = tmp }
-                          invalidate()
-                          return true
-                      }
-
-                      MotionEvent.ACTION_UP -> {
-                          when (pressedBtn) {
-                              0 -> mode = if (mode == Mode.CALIBRATE) Mode.AIM else Mode.CALIBRATE
-                              1 -> showFan = !showFan
-                              2 -> onLock?.invoke()
-                              3 -> angle -= 0.2f
-                              4 -> angle += 0.2f
-                          }
+                      MotionEvent.ACTION_MOVE -> if (drag != Drag.NONE) { applyDrag(e.x, e.y); invalidate() }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                          val b = pressedBtn
                           pressedBtn = -1
+                          if (b != -1 && b == hitBtn(e.x, e.y)) onButton(b)
                           drag = Drag.NONE
                           invalidate()
-                          return true
                       }
                   }
                   return true
               }
+
+              private fun onButton(b: Int) {
+                  when (b) {
+                      0 -> mode = if (mode == Mode.CALIBRATE) Mode.AIM else Mode.CALIBRATE
+                      1 -> showFan = !showFan
+                      2 -> onExit?.invoke()
+                      3 -> if (mode == Mode.AIM) onLock?.invoke()
+                      4 -> angle -= 0.01f
+                      5 -> angle += 0.01f
+                  }
+                  invalidate()
+              }
           }
           EOF
 
-      - name: Accept licenses
-        run: yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
 
-      - name: Install SDK
-        run: sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null || true
-
-      - name: Build APK
-        run: gradle assembleDebug --no-daemon
-
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk PoolAim.apk
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          name: PoolAim-apk
-          path: PoolAim.apk
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: PoolAim build ${{ github.run_number }}
-          files: PoolAim.apk
+          name: pool-aim-apk
+          path: app/build/outputs/apk/debug/*.apk

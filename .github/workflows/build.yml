@@ -61,8 +61,8 @@ jobs:
                   applicationId = "com.venice.poolaim"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "1.1"
               }
               buildTypes { release { isMinifyEnabled = false } }
               compileOptions {
@@ -87,7 +87,7 @@ jobs:
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
-                      android:screenOrientation="portrait">
+                      android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -127,7 +127,7 @@ jobs:
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
                   android:layout_marginTop="14dp"
-                  android:text="1. Overlay permission do\n2. Start dabao\n3. Game kholo, CALIBRATE se table ke 4 kone align karo\n4. AIM pe jao, cue ball drag karo, line se aim karo\n5. LOCK dabao aur shot maaro"
+                  android:text="1. Overlay permission do\n2. Start dabao\n3. Game landscape mein kholo\n4. CALIB se table ke 4 kone align karo\n5. AIM pe jao, ball drag karke move karo, khaali jagah drag karke direction do\n6. LOCK dabao aur shot maaro"
                   android:textColor="#9AB0C0"
                   android:lineSpacingExtra="4dp" />
 
@@ -206,6 +206,7 @@ jobs:
           import android.app.PendingIntent
           import android.app.Service
           import android.content.Intent
+          import android.content.res.Configuration
           import android.graphics.PixelFormat
           import android.os.IBinder
           import android.view.Gravity
@@ -244,6 +245,17 @@ jobs:
                   wm.addView(v, p)
                   view = v
                   params = p
+              }
+
+              override fun onConfigurationChanged(newConfig: Configuration) {
+                  super.onConfigurationChanged(newConfig)
+                  val v = view ?: return
+                  val p = params ?: return
+                  runCatching {
+                      wm.updateViewLayout(v, p)
+                      v.requestLayout()
+                      v.invalidate()
+                  }
               }
 
               override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -319,18 +331,33 @@ jobs:
               var onLock: (() -> Unit)? = null
 
               private enum class Mode { CALIBRATE, AIM }
-              private enum class Drag { NONE, TL, TR, BL, BR, CUE, AIM }
+              private enum class Drag { NONE, TL, TR, BL, BR, BALL, AIM }
 
-              private var table: RectF? = null
-              private val cue = PointF()
-              private var angle = 0f
+              private inner class Ball(val fx: Float, val fy: Float, colorInt: Int, val label: String) {
+                  var angle = 0f
+                  val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                      style = Paint.Style.FILL
+                      color = colorInt
+                  }
+                  val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                      style = Paint.Style.STROKE
+                      strokeWidth = 2.5f * d
+                      color = colorInt
+                  }
+              }
+
+              private val tableFrac = RectF(0.07f, 0.24f, 0.93f, 0.82f)
+              private val table = RectF()
+              private val balls = mutableListOf<Ball>()
+              private var selected: Ball? = null
+
               private var mode = Mode.CALIBRATE
               private var showFan = true
               private var drag = Drag.NONE
               private var pressedBtn = -1
 
               private val d = resources.displayMetrics.density
-              private val ballR: Float get() = max(6f * d, (table?.width() ?: 0f) / 88f)
+              private val ballR: Float get() = max(5f * d, table.height() / 44f)
               private val pocketR: Float get() = ballR * 1.9f
 
               private val btnCal = RectF()
@@ -344,13 +371,9 @@ jobs:
                   style = Paint.Style.STROKE; strokeWidth = 2f * d
                   color = Color.parseColor("#8060D8FF")
               }
-              private val pPath = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  style = Paint.Style.STROKE; strokeWidth = 3f * d
-                  color = Color.parseColor("#FF66E0FF")
-              }
               private val pFan = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   style = Paint.Style.STROKE; strokeWidth = 1f * d
-                  color = Color.parseColor("#40B9F0FF")
+                  color = Color.parseColor("#40FFFFFF")
               }
               private val pPocket = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   style = Paint.Style.STROKE; strokeWidth = 2f * d
@@ -360,9 +383,9 @@ jobs:
                   style = Paint.Style.STROKE; strokeWidth = 4f * d
                   color = Color.parseColor("#FFFFD24A")
               }
-              private val pCue = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  style = Paint.Style.STROKE; strokeWidth = 3f * d
-                  color = Color.parseColor("#FFFF5566")
+              private val pSel = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE; strokeWidth = 2.5f * d
+                  color = Color.WHITE
               }
               private val pHandle = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   style = Paint.Style.FILL; color = Color.parseColor("#CC00FFC8")
@@ -376,12 +399,30 @@ jobs:
               private val pText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   color = Color.WHITE; textSize = 12f * d; textAlign = Paint.Align.CENTER
               }
+              private val pNum = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE; textSize = 10f * d; textAlign = Paint.Align.CENTER
+                  isFakeBoldText = true
+              }
               private val pCall = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   color = Color.parseColor("#FFFFD24A"); textSize = 15f * d
                   textAlign = Paint.Align.CENTER; isFakeBoldText = true
               }
 
+              private val palette = intArrayOf(
+                  Color.parseColor("#FFEB3B"), Color.parseColor("#1E88E5"),
+                  Color.parseColor("#E53935"), Color.parseColor("#8E24AA"),
+                  Color.parseColor("#FB8C00"), Color.parseColor("#43A047"),
+                  Color.parseColor("#6D4C41"), Color.parseColor("#263238"),
+                  Color.parseColor("#FFF59D"), Color.parseColor("#90CAF9"),
+                  Color.parseColor("#EF9A9A"), Color.parseColor("#CE93D8")
+              )
+
               override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                  table.set(
+                      tableFrac.left * w, tableFrac.top * h,
+                      tableFrac.right * w, tableFrac.bottom * h
+                  )
+
                   val bh = 42 * d
                   btnCal.set(8 * d, 8 * d, 8 * d + 92 * d, 8 * d + bh)
                   btnFan.set(btnCal.right + 6 * d, 8 * d, btnCal.right + 6 * d + 66 * d, 8 * d + bh)
@@ -391,216 +432,40 @@ jobs:
                   btnMinus.set(w / 2f - 104 * d, cy - 21 * d, w / 2f - 60 * d, cy + 21 * d)
                   btnPlus.set(w / 2f + 60 * d, cy - 21 * d, w / 2f + 104 * d, cy + 21 * d)
 
-                  if (table == null) {
-                      val tw = w * 0.86f
-                      val th = min(h * 0.58f, tw * 2f)
-                      val l = (w - tw) / 2f
-                      val t = h * 0.24f
-                      table = RectF(l, t, l + tw, t + th)
-                      cue.set(table!!.centerX(), table!!.bottom - 140 * d)
-                  }
-              }
-
-              private fun pockets(): List<PointF> {
-                  val r = table ?: return emptyList()
-                  return listOf(
-                      PointF(r.left, r.top), PointF(r.right, r.top),
-                      PointF(r.left, r.bottom), PointF(r.right, r.bottom),
-                      PointF(r.left, r.centerY()), PointF(r.right, r.centerY())
-                  )
-              }
-
-              private val pocketNames = arrayOf(
-                  "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Left-Side", "Right-Side"
-              )
-
-              private fun distToSeg(p: PointF, a: PointF, b: PointF): Float {
-                  val abx = b.x - a.x
-                  val aby = b.y - a.y
-                  val len2 = abx * abx + aby * aby
-                  if (len2 < 0.001f) return hypot(p.x - a.x, p.y - a.y)
-                  var t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2
-                  t = t.coerceIn(0f, 1f)
-                  return hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t))
-              }
-
-              private fun trace(sx: Float, sy: Float, dx0: Float, dy0: Float, bounces: Int): Pair<MutableList<PointF>, Int> {
-                  val r = table ?: return Pair(mutableListOf(), -1)
-                  val ins = ballR
-                  val l = r.left + ins
-                  val t = r.top + ins
-                  val rt = r.right - ins
-                  val b = r.bottom - ins
-                  val pts = mutableListOf(PointF(sx, sy))
-                  var px = sx
-                  var py = sy
-                  var dx = dx0
-                  var dy = dy0
-                  val pk = pockets()
-
-                  repeat(bounces) {
-                      var best = Float.MAX_VALUE
-                      var axis = 0
-                      if (dx > 0.0001f) { val v = (rt - px) / dx; if (v > 0 && v < best) { best = v; axis = 1 } }
-                      if (dx < -0.0001f) { val v = (l - px) / dx; if (v > 0 && v < best) { best = v; axis = 1 } }
-                      if (dy > 0.0001f) { val v = (b - py) / dy; if (v > 0 && v < best) { best = v; axis = 2 } }
-                      if (dy < -0.0001f) { val v = (t - py) / dy; if (v > 0 && v < best) { best = v; axis = 2 } }
-                      if (best == Float.MAX_VALUE) return Pair(pts, -1)
-
-                      val ex = px + dx * best
-                      val ey = py + dy * best
-                      val a = PointF(px, py)
-                      val e = PointF(ex, ey)
-
-                      for (i in pk.indices) {
-                          if (distToSeg(pk[i], a, e) < pocketR) {
-                              pts.add(pk[i])
-                              return Pair(pts, i)
-                          }
-                      }
-
-                      pts.add(e)
-                      px = ex
-                      py = ey
-                      if (axis == 1) dx = -dx else dy = -dy
-                  }
-                  return Pair(pts, -1)
-              }
-
-              private fun clampCue() {
-                  val r = table ?: return
-                  cue.x = cue.x.coerceIn(r.left + ballR, r.right - ballR)
-                  cue.y = cue.y.coerceIn(r.top + ballR, r.bottom - ballR)
-              }
-
-              override fun onDraw(canvas: Canvas) {
-                  val r = table ?: return
-                  canvas.drawRect(r, pFrame)
-
-                  val pk = pockets()
-                  val res = trace(cue.x, cue.y, cos(angle), sin(angle), 3)
-
-                  if (showFan && mode == Mode.AIM) {
-                      for (k in -3..3) {
-                          if (k == 0) continue
-                          val a2 = angle + k * 0.05f
-                          val sub = trace(cue.x, cue.y, cos(a2), sin(a2), 2)
-                          val fp = Path()
-                          sub.first.forEachIndexed { i, p -> if (i == 0) fp.moveTo(p.x, p.y) else fp.lineTo(p.x, p.y) }
-                          canvas.drawPath(fp, pFan)
-                      }
-                  }
-
-                  for (i in pk.indices) {
-                      canvas.drawCircle(pk[i].x, pk[i].y, pocketR, if (res.second == i) pPocketHit else pPocket)
-                  }
-
-                  val path = Path()
-                  res.first.forEachIndexed { i, p -> if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y) }
-                  canvas.drawPath(path, pPath)
-
-                  canvas.drawCircle(cue.x, cue.y, ballR, pCue)
-                  val hx = cue.x + cos(angle) * ballR * 3.2f
-                  val hy = cue.y + sin(angle) * ballR * 3.2f
-                  canvas.drawCircle(hx, hy, ballR * 0.55f, pHandle)
-
-                  if (res.second >= 0) {
-                      canvas.drawText(pocketNames[res.second], width / 2f, height - 96 * d, pCall)
-                  }
-
-                  drawBtn(canvas, btnCal, if (mode == Mode.AIM) "AIM" else "CALIB", mode == Mode.AIM)
-                  drawBtn(canvas, btnFan, "FAN", showFan)
-                  drawBtn(canvas, btnExit, "X", false)
-                  drawBtn(canvas, btnLock, "LOCK", false)
-                  drawBtn(canvas, btnMinus, "-", false)
-                  drawBtn(canvas, btnPlus, "+", false)
-              }
-
-              private fun drawBtn(canvas: Canvas, r: RectF, label: String, on: Boolean) {
-                  canvas.drawRoundRect(r, 8f * d, 8f * d, if (on) pBtnOn else pBtn)
-                  canvas.drawText(label, r.centerX(), r.centerY() + 4f * d, pText)
-              }
-
-              private fun hitBtn(x: Float, y: Float): Int {
-                  val rects = listOf(btnCal, btnFan, btnExit, btnLock, btnMinus, btnPlus)
-                  for (i in rects.indices) if (rects[i].contains(x, y)) return i
-                  return -1
-              }
-
-              private fun pickDrag(x: Float, y: Float): Drag {
-                  val r = table ?: return Drag.NONE
-                  if (mode == Mode.AIM) {
-                      return if (hypot(x - cue.x, y - cue.y) < ballR * 3f) Drag.CUE else Drag.AIM
-                  }
-                  val thr = 48 * d
-                  val corners = listOf(
-                      Drag.TL to PointF(r.left, r.top),
-                      Drag.TR to PointF(r.right, r.top),
-                      Drag.BL to PointF(r.left, r.bottom),
-                      Drag.BR to PointF(r.right, r.bottom)
-                  )
-                  var bestD = Float.MAX_VALUE
-                  var best = Drag.NONE
-                  for ((tag, p) in corners) {
-                      val dd = hypot(x - p.x, y - p.y)
-                      if (dd < thr && dd < bestD) { bestD = dd; best = tag }
-                  }
-                  return best
-              }
-
-              private fun applyDrag(x: Float, y: Float) {
-                  val r = table ?: return
-                  when (drag) {
-                      Drag.TL -> { r.left = min(x, r.right - 100 * d); r.top = min(y, r.bottom - 100 * d) }
-                      Drag.TR -> { r.right = max(x, r.left + 100 * d); r.top = min(y, r.bottom - 100 * d) }
-                      Drag.BL -> { r.left = min(x, r.right - 100 * d); r.bottom = max(y, r.top + 100 * d) }
-                      Drag.BR -> { r.right = max(x, r.left + 100 * d); r.bottom = max(y, r.top + 100 * d) }
-                      Drag.CUE -> { cue.set(x, y); clampCue() }
-                      Drag.AIM -> angle = atan2(y - cue.y, x - cue.x)
-                      Drag.NONE -> return
-                  }
-              }
-
-              @SuppressLint("ClickableViewAccessibility")
-              override fun onTouchEvent(e: MotionEvent): Boolean {
-                  when (e.actionMasked) {
-                      MotionEvent.ACTION_DOWN -> {
-                          pressedBtn = hitBtn(e.x, e.y)
-                          if (pressedBtn != -1) { invalidate(); return true }
-                          drag = pickDrag(e.x, e.y)
-                          if (drag != Drag.NONE) { applyDrag(e.x, e.y); invalidate() }
-                      }
-                      MotionEvent.ACTION_MOVE -> if (drag != Drag.NONE) { applyDrag(e.x, e.y); invalidate() }
-                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                          val b = pressedBtn
-                          pressedBtn = -1
-                          if (b != -1 && b == hitBtn(e.x, e.y)) onButton(b)
-                          drag = Drag.NONE
-                          invalidate()
-                      }
-                  }
-                  return true
-              }
-
-              private fun onButton(b: Int) {
-                  when (b) {
-                      0 -> mode = if (mode == Mode.CALIBRATE) Mode.AIM else Mode.CALIBRATE
-                      1 -> showFan = !showFan
-                      2 -> onExit?.invoke()
-                      3 -> if (mode == Mode.AIM) onLock?.invoke()
-                      4 -> angle -= 0.01f
-                      5 -> angle += 0.01f
-                  }
+                  if (balls.isEmpty()) seedBalls()
+                  clampAll()
                   invalidate()
               }
-          }
-          EOF
 
-      - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+              private fun seedBalls() {
+                  for (i in 0 until 12) {
+                      val c = i % 4
+                      val r = i / 4
+                      val tx = 0.22f + c * 0.19f
+                      val ty = 0.24f + r * 0.17f
+                      balls.add(Ball(
+                          tableFrac.left + tx * tableFrac.width(),
+                          tableFrac.top + ty * tableFrac.height(),
+                          palette[i],
+                          (i + 1).toString()
+                      ))
+                  }
+                  balls.add(Ball(
+                      tableFrac.left + 0.5f * tableFrac.width(),
+                      tableFrac.top + 0.86f * tableFrac.height(),
+                      Color.WHITE,
+                      "C"
+                  ))
+                  selected = balls.last()
+              }
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: pool-aim-apk
-          path: app/build/outputs/apk/debug/*.apk
+              private fun px(b: Ball) = PointF(b.fx * width, b.fy * height)
+
+              private fun pockets(): List<PointF> = listOf(
+                  PointF(table.left, table.top), PointF(table.right, table.top),
+                  PointF(table.left, table.bottom), PointF(table.right, table.bottom),
+                  PointF(table.left, table.centerY()), PointF(table.right, table.centerY())
+              )
+
+              private val pocketNames = arrayOf(
+                  "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Left-Side", "Right-Side

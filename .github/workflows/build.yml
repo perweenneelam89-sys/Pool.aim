@@ -468,4 +468,258 @@ jobs:
               )
 
               private val pocketNames = arrayOf(
-                  "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Left-Side", "Right-Side
+                  "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Left-Side", "Right-Side"
+              )
+
+              private fun distToSeg(p: PointF, a: PointF, b: PointF): Float {
+                  val abx = b.x - a.x
+                  val aby = b.y - a.y
+                  val len2 = abx * abx + aby * aby
+                  if (len2 < 0.001f) return hypot(p.x - a.x, p.y - a.y)
+                  var t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2
+                  t = t.coerceIn(0f, 1f)
+                  return hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t))
+              }
+
+              private fun trace(sx: Float, sy: Float, dx0: Float, dy0: Float, bounces: Int): Pair<MutableList<PointF>, Int> {
+                  val ins = ballR
+                  val l = table.left + ins
+                  val t = table.top + ins
+                  val rt = table.right - ins
+                  val b = table.bottom - ins
+                  val pts = mutableListOf(PointF(sx, sy))
+                  var px = sx
+                  var py = sy
+                  var dx = dx0
+                  var dy = dy0
+                  val pk = pockets()
+
+                  repeat(bounces) {
+                      var best = Float.MAX_VALUE
+                      var axis = 0
+                      if (dx > 0.0001f) { val v = (rt - px) / dx; if (v > 0 && v < best) { best = v; axis = 1 } }
+                      if (dx < -0.0001f) { val v = (l - px) / dx; if (v > 0 && v < best) { best = v; axis = 1 } }
+                      if (dy > 0.0001f) { val v = (b - py) / dy; if (v > 0 && v < best) { best = v; axis = 2 } }
+                      if (dy < -0.0001f) { val v = (t - py) / dy; if (v > 0 && v < best) { best = v; axis = 2 } }
+                      if (best == Float.MAX_VALUE) return Pair(pts, -1)
+
+                      val ex = px + dx * best
+                      val ey = py + dy * best
+                      val a = PointF(px, py)
+                      val e = PointF(ex, ey)
+
+                      for (i in pk.indices) {
+                          if (distToSeg(pk[i], a, e) < pocketR) {
+                              pts.add(pk[i])
+                              return Pair(pts, i)
+                          }
+                      }
+
+                      pts.add(e)
+                      px = ex
+                      py = ey
+                      if (axis == 1) dx = -dx else dy = -dy
+                  }
+                  return Pair(pts, -1)
+              }
+
+              private fun clampBall(b: Ball) {
+                  val m = ballR / width
+                  val mh = ballR / height
+                  b.fx = b.fx.coerceIn(tableFrac.left + m, tableFrac.right - m)
+                  b.fy = b.fy.coerceIn(tableFrac.top + mh, tableFrac.bottom - mh)
+              }
+
+              private fun clampAll() {
+                  for (b in balls) clampBall(b)
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  canvas.drawRect(table, pFrame)
+                  val pk = pockets()
+
+                  val sel = selected
+                  if (showFan && mode == Mode.AIM && sel != null) {
+                      val sp = px(sel)
+                      for (k in -3..3) {
+                          if (k == 0) continue
+                          val a2 = sel.angle + k * 0.05f
+                          val sub = trace(sp.x, sp.y, cos(a2), sin(a2), 2)
+                          val fp = Path()
+                          sub.first.forEachIndexed { i, p -> if (i == 0) fp.moveTo(p.x, p.y) else fp.lineTo(p.x, p.y) }
+                          canvas.drawPath(fp, pFan)
+                      }
+                  }
+
+                  var hitPocket = -1
+                  for (b in balls) {
+                      val bp = px(b)
+                      val res = trace(bp.x, bp.y, cos(b.angle), sin(b.angle), 3)
+                      val path = Path()
+                      res.first.forEachIndexed { i, p -> if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y) }
+                      canvas.drawPath(path, b.line)
+                      if (b === sel) hitPocket = res.second
+                  }
+
+                  for (i in pk.indices) {
+                      canvas.drawCircle(pk[i].x, pk[i].y, pocketR, if (hitPocket == i) pPocketHit else pPocket)
+                  }
+
+                  for (b in balls) {
+                      val bp = px(b)
+                      canvas.drawCircle(bp.x, bp.y, ballR, b.fill)
+                      if (b === sel) canvas.drawCircle(bp.x, bp.y, ballR + 2f * d, pSel)
+                      canvas.drawText(b.label, bp.x, bp.y + 3.5f * d, pNum)
+                  }
+
+                  if (sel != null) {
+                      val sp = px(sel)
+                      val hx = sp.x + cos(sel.angle) * ballR * 3.2f
+                      val hy = sp.y + sin(sel.angle) * ballR * 3.2f
+                      canvas.drawCircle(hx, hy, ballR * 0.55f, pHandle)
+                  }
+
+                  if (hitPocket >= 0) {
+                      canvas.drawText(pocketNames[hitPocket], width / 2f, height - 96 * d, pCall)
+                  }
+
+                  drawBtn(canvas, btnCal, if (mode == Mode.AIM) "AIM" else "CALIB", mode == Mode.AIM)
+                  drawBtn(canvas, btnFan, "FAN", showFan)
+                  drawBtn(canvas, btnExit, "X", false)
+                  drawBtn(canvas, btnLock, "LOCK", false)
+                  drawBtn(canvas, btnMinus, "-", false)
+                  drawBtn(canvas, btnPlus, "+", false)
+              }
+
+              private fun drawBtn(canvas: Canvas, r: RectF, label: String, on: Boolean) {
+                  canvas.drawRoundRect(r, 8f * d, 8f * d, if (on) pBtnOn else pBtn)
+                  canvas.drawText(label, r.centerX(), r.centerY() + 4f * d, pText)
+              }
+
+              private fun hitBtn(x: Float, y: Float): Int {
+                  val rects = listOf(btnCal, btnFan, btnExit, btnLock, btnMinus, btnPlus)
+                  for (i in rects.indices) if (rects[i].contains(x, y)) return i
+                  return -1
+              }
+
+              private fun nearestBall(x: Float, y: Float): Ball? {
+                  var best: Ball? = null
+                  var bestD = Float.MAX_VALUE
+                  for (b in balls) {
+                      val bp = px(b)
+                      val dd = hypot(x - bp.x, y - bp.y)
+                      if (dd < ballR * 2.5f && dd < bestD) { bestD = dd; best = b }
+                  }
+                  return best
+              }
+
+              private fun pickDrag(x: Float, y: Float): Drag {
+                  if (mode == Mode.AIM) {
+                      val b = nearestBall(x, y)
+                      if (b != null) { selected = b; return Drag.BALL }
+                      return if (selected != null) Drag.AIM else Drag.NONE
+                  }
+                  val thr = 48 * d
+                  val corners = listOf(
+                      Drag.TL to PointF(table.left, table.top),
+                      Drag.TR to PointF(table.right, table.top),
+                      Drag.BL to PointF(table.left, table.bottom),
+                      Drag.BR to PointF(table.right, table.bottom)
+                  )
+                  var bestD = Float.MAX_VALUE
+                  var best = Drag.NONE
+                  for ((tag, p) in corners) {
+                      val dd = hypot(x - p.x, y - p.y)
+                      if (dd < thr && dd < bestD) { bestD = dd; best = tag }
+                  }
+                  return best
+              }
+
+              private fun applyDrag(x: Float, y: Float) {
+                  val fx = x / width
+                  val fy = y / height
+                  when (drag) {
+                      Drag.TL -> {
+                          tableFrac.left = min(fx, tableFrac.right - 0.2f)
+                          tableFrac.top = min(fy, tableFrac.bottom - 0.2f)
+                          resync()
+                      }
+                      Drag.TR -> {
+                          tableFrac.right = max(fx, tableFrac.left + 0.2f)
+                          tableFrac.top = min(fy, tableFrac.bottom - 0.2f)
+                          resync()
+                      }
+                      Drag.BL -> {
+                          tableFrac.left = min(fx, tableFrac.right - 0.2f)
+                          tableFrac.bottom = max(fy, tableFrac.top + 0.2f)
+                          resync()
+                      }
+                      Drag.BR -> {
+                          tableFrac.right = max(fx, tableFrac.left + 0.2f)
+                          tableFrac.bottom = max(fy, tableFrac.top + 0.2f)
+                          resync()
+                      }
+                      Drag.BALL -> {
+                          selected?.let { it.fx = fx; it.fy = fy; clampBall(it) }
+                      }
+                      Drag.AIM -> {
+                          val s = selected ?: return
+                          val sp = px(s)
+                          s.angle = atan2(y - sp.y, x - sp.x)
+                      }
+                      Drag.NONE -> return
+                  }
+              }
+
+              private fun resync() {
+                  table.set(
+                      tableFrac.left * width, tableFrac.top * height,
+                      tableFrac.right * width, tableFrac.bottom * height
+                  )
+                  clampAll()
+              }
+
+              @SuppressLint("ClickableViewAccessibility")
+              override fun onTouchEvent(e: MotionEvent): Boolean {
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          pressedBtn = hitBtn(e.x, e.y)
+                          if (pressedBtn != -1) { invalidate(); return true }
+                          drag = pickDrag(e.x, e.y)
+                          if (drag != Drag.NONE) { applyDrag(e.x, e.y); invalidate() }
+                      }
+                      MotionEvent.ACTION_MOVE -> if (drag != Drag.NONE) { applyDrag(e.x, e.y); invalidate() }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                          val b = pressedBtn
+                          pressedBtn = -1
+                          if (b != -1 && b == hitBtn(e.x, e.y)) onButton(b)
+                          drag = Drag.NONE
+                          invalidate()
+                      }
+                  }
+                  return true
+              }
+
+              private fun onButton(b: Int) {
+                  when (b) {
+                      0 -> mode = if (mode == Mode.CALIBRATE) Mode.AIM else Mode.CALIBRATE
+                      1 -> showFan = !showFan
+                      2 -> onExit?.invoke()
+                      3 -> if (mode == Mode.AIM) onLock?.invoke()
+                      4 -> selected?.let { it.angle -= 0.01f }
+                      5 -> selected?.let { it.angle += 0.01f }
+                  }
+                  invalidate()
+              }
+          }
+          EOF
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pool-aim-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

@@ -61,8 +61,8 @@ jobs:
                   applicationId = "com.venice.poolaim"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "1.1"
+                  versionCode = 3
+                  versionName = "1.2"
               }
               buildTypes { release { isMinifyEnabled = false } }
               compileOptions {
@@ -333,7 +333,7 @@ jobs:
               private enum class Mode { CALIBRATE, AIM }
               private enum class Drag { NONE, TL, TR, BL, BR, BALL, AIM }
 
-              private inner class Ball(val fx: Float, val fy: Float, colorInt: Int, val label: String) {
+              private inner class Ball(var fx: Float, var fy: Float, colorInt: Int, val label: String) {
                   var angle = 0f
                   val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                       style = Paint.Style.FILL

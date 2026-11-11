@@ -61,8 +61,8 @@ jobs:
                   applicationId = "com.venice.poolaim"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "1.2"
+                  versionCode = 5
+                  versionName = "2.0"
               }
               buildTypes { release { isMinifyEnabled = false } }
               compileOptions {
@@ -79,6 +79,7 @@ jobs:
               <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <application
                   android:allowBackup="true"
@@ -96,7 +97,7 @@ jobs:
                   <service
                       android:name=".OverlayService"
                       android:exported="false"
-                      android:foregroundServiceType="specialUse">
+                      android:foregroundServiceType="mediaProjection|specialUse">
                       <property
                           android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                           android:value="Aim overlay for pool games" />
@@ -127,7 +128,7 @@ jobs:
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
                   android:layout_marginTop="14dp"
-                  android:text="1. Overlay permission do\n2. Start dabao\n3. Game landscape mein kholo\n4. CALIB se table ke 4 kone align karo\n5. AIM pe jao, ball drag karke move karo, khaali jagah drag karke direction do\n6. LOCK dabao aur shot maaro"
+                  android:text="1. Overlay permission do\n2. Start dabao (screen capture allow karo)\n3. 8 Ball Pool kholo (landscape)\n4. CALIB se table ke 4 kone align karo\n5. AIM pe jao - balls khud detect hongi\n6. LOCK dabao - game normal chalega"
                   android:textColor="#9AB0C0"
                   android:lineSpacingExtra="4dp" />
 
@@ -160,6 +161,7 @@ jobs:
           import android.Manifest
           import android.app.Activity
           import android.content.Intent
+          import android.media.projection.MediaProjectionManager
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
@@ -168,6 +170,9 @@ jobs:
           import android.widget.Toast
 
           class MainActivity : Activity() {
+
+              private val reqProj = 100
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   setContentView(R.layout.activity_main)
@@ -186,13 +191,99 @@ jobs:
                           Toast.makeText(this, "Pehle overlay permission do", Toast.LENGTH_SHORT).show()
                           return@setOnClickListener
                       }
-                      startForegroundService(Intent(this, OverlayService::class.java))
-                      moveTaskToBack(true)
+                      val mpm = getSystemService(MediaProjectionManager::class.java)
+                      startActivityForResult(mpm.createScreenCaptureIntent(), reqProj)
                   }
 
                   findViewById<Button>(R.id.btnStop).setOnClickListener {
                       stopService(Intent(this, OverlayService::class.java))
                   }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == reqProj && resultCode == RESULT_OK && data != null) {
+                      val i = Intent(this, OverlayService::class.java)
+                          .setAction(OverlayService.ACTION_START)
+                          .putExtra(OverlayService.EXTRA_CODE, resultCode)
+                          .putExtra(OverlayService.EXTRA_DATA, data)
+                      startForegroundService(i)
+                      moveTaskToBack(true)
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/venice/poolaim/Detector.kt <<'EOF'
+          package com.venice.poolaim
+
+          import java.nio.ByteBuffer
+
+          object Detector {
+
+              class Det(val fx: Float, val fy: Float, val color: Int)
+
+              private fun classify(r: Int, g: Int, b: Int): Int {
+                  val mx = maxOf(r, g, b)
+                  val mn = minOf(r, g, b)
+                  val sat = mx - mn
+                  if (mx < 50) return 8
+                  if (g > r + 25 && g > b + 18 && mx < 140) return -1
+                  if (r > 198 && g > 198 && b > 190) return 0
+                  if (sat < 45) return -1
+                  if (r > 160 && g > 125 && b < 120) return 1
+                  if (b > 125 && r < 115) return 2
+                  if (r > 135 && g < 105 && b < 105) return 3
+                  if (r > 90 && b > 120 && g < 105) return 4
+                  if (r > 185 && g in 100..190 && b < 95) return 5
+                  if (g > 100 && r < 115 && b < 120) return 6
+                  if (r in 85..190 && g in 50..125 && b < 95) return 7
+                  return -1
+              }
+
+              fun detect(buf: ByteBuffer, w: Int, h: Int, rowStride: Int, pixStride: Int): List<Det> {
+                  val cell = maxOf(4, h / 20)
+                  val cols = w / cell + 1
+                  val rows = h / cell + 1
+                  val count = IntArray(cols * rows)
+                  val sumX = IntArray(cols * rows)
+                  val sumY = IntArray(cols * rows)
+                  val votes = Array(cols * rows) { IntArray(9) }
+
+                  var y = 0
+                  while (y < h) {
+                      var x = 0
+                      val rowBase = y * rowStride
+                      while (x < w) {
+                          val off = rowBase + x * pixStride
+                          if (off + 2 < buf.limit()) {
+                              val r = buf.get(off).toInt() and 0xFF
+                              val g = buf.get(off + 1).toInt() and 0xFF
+                              val b = buf.get(off + 2).toInt() and 0xFF
+                              val c = classify(r, g, b)
+                              if (c >= 0) {
+                                  val idx = (y / cell) * cols + (x / cell)
+                                  count[idx]++
+                                  sumX[idx] += x
+                                  sumY[idx] += y
+                                  votes[idx][c]++
+                              }
+                          }
+                          x += 2
+                      }
+                      y += 2
+                  }
+
+                  val out = mutableListOf<Det>()
+                  for (i in count.indices) {
+                      if (count[i] < 6) continue
+                      var bestC = 0
+                      for (c in 1..8) if (votes[i][c] > votes[i][bestC]) bestC = c
+                      val fx = (sumX[i].toFloat() / count[i]) / w
+                      val fy = (sumY[i].toFloat() / count[i]) / h
+                      out.add(Det(fx, fy, bestC))
+                  }
+                  return out
               }
           }
           EOF
@@ -206,17 +297,35 @@ jobs:
           import android.app.PendingIntent
           import android.app.Service
           import android.content.Intent
+          import android.content.pm.ServiceInfo
           import android.content.res.Configuration
           import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.HandlerThread
           import android.os.IBinder
           import android.view.Gravity
           import android.view.WindowManager
+          import kotlin.math.max
 
           class OverlayService : Service() {
               private lateinit var wm: WindowManager
               private var view: AimView? = null
               private var params: WindowManager.LayoutParams? = null
               private var locked = false
+
+              private var thread: HandlerThread? = null
+              private var bg: Handler? = null
+              private var main: Handler? = null
+              private var projection: MediaProjection? = null
+              private var display: VirtualDisplay? = null
+              private var reader: ImageReader? = null
+              private var lastCapture = 0L
 
               override fun onBind(i: Intent?): IBinder? = null
 
@@ -226,25 +335,38 @@ jobs:
                       .createNotificationChannel(NotificationChannel(CH, "Overlay", NotificationManager.IMPORTANCE_LOW))
                   startForeground(1, buildNotification())
 
+                  thread = HandlerThread("cap").also { it.start() }
+                  bg = Handler(thread!!.looper)
+                  main = Handler(mainLooper)
+
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  val v = AimView(this)
+                  v.onExit = { stopSelf() }
+                  v.onLock = { lock() }
+                  val p = makeParams(true)
+                  wm.addView(v, p)
+                  view = v
+                  params = p
+              }
+
+              private fun makeParams(touchable: Boolean): WindowManager.LayoutParams {
+                  var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                      WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                      WindowManager.LayoutParams.FLAG_SECURE
+                  if (!touchable) {
+                      flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                  }
                   val p = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.MATCH_PARENT,
                       WindowManager.LayoutParams.MATCH_PARENT,
                       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                          WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      flags,
                       PixelFormat.TRANSLUCENT
                   )
                   p.gravity = Gravity.TOP or Gravity.START
-
-                  val v = AimView(this)
-                  v.onExit = { stopSelf() }
-                  v.onLock = { lock() }
-                  wm.addView(v, p)
-                  view = v
-                  params = p
+                  return p
               }
 
               override fun onConfigurationChanged(newConfig: Configuration) {
@@ -259,23 +381,101 @@ jobs:
               }
 
               override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                  if (intent?.action == ACTION_UNLOCK) unlock()
+                  when (intent?.action) {
+                      ACTION_UNLOCK -> unlock()
+                      ACTION_START -> {
+                          val code = intent.getIntExtra(EXTRA_CODE, 0)
+                          val data = intent.getParcelableExtra(EXTRA_DATA) as? Intent
+                          if (data != null) startCapture(code, data)
+                      }
+                  }
                   return START_STICKY
               }
 
+              private fun startCapture(code: Int, data: Intent) {
+                  if (projection != null) return
+                  val mpm = getSystemService(MediaProjectionManager::class.java)
+                  val mp = mpm.getMediaProjection(code, data) ?: return
+                  projection = mp
+
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(1, buildNotification(),
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                              ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                  }
+
+                  mp.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() {
+                          runCatching { reader?.close() }
+                          runCatching { display?.release() }
+                          reader = null
+                          display = null
+                          projection = null
+                      }
+                  }, bg)
+
+                  val dm = resources.displayMetrics
+                  val cw = max(240, dm.widthPixels / 3)
+                  val ch = max(240, dm.heightPixels / 3)
+                  val r = ImageReader.newInstance(cw, ch, PixelFormat.RGBA_8888, 2)
+                  reader = r
+                  display = mp.createVirtualDisplay(
+                      "poolcap", cw, ch, dm.densityDpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, r.surface, null, bg
+                  )
+
+                  r.setOnImageAvailableListener({ rd ->
+                      val now = System.currentTimeMillis()
+                      if (now - lastCapture < 700) {
+                          runCatching { rd.acquireLatestImage()?.close() }
+                          return@setOnImageAvailableListener
+                      }
+                      lastCapture = now
+                      val img = runCatching { rd.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
+                      try {
+                          val plane = img.planes[0]
+                          val buf = plane.buffer
+                          val found = Detector.detect(buf, img.width, img.height, plane.rowStride, plane.pixelStride)
+                          val target = view
+                          if (target != null) main?.post { target.applyDetected(found) }
+                      } catch (t: Throwable) {
+                      } finally {
+                          runCatching { img.close() }
+                      }
+                  }, bg)
+              }
+
               private fun lock() {
-                  val p = params ?: return
+                  if (locked) return
+                  val v = view ?: return
                   locked = true
-                  p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                  wm.updateViewLayout(view, p)
-                  getSystemService(NotificationManager::class.java).notify(1, buildNotification())
+                  v.locked = true
+                  v.invalidate()
+                  val p = makeParams(false)
+                  params = p
+                  runCatching {
+                      wm.removeView(v)
+                      wm.addView(v, p)
+                  }
+                  refreshNotification()
               }
 
               private fun unlock() {
-                  val p = params ?: return
+                  if (!locked) return
+                  val v = view ?: return
                   locked = false
-                  p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                  wm.updateViewLayout(view, p)
+                  v.locked = false
+                  v.invalidate()
+                  val p = makeParams(true)
+                  params = p
+                  runCatching {
+                      wm.removeView(v)
+                      wm.addView(v, p)
+                  }
+                  refreshNotification()
+              }
+
+              private fun refreshNotification() {
                   getSystemService(NotificationManager::class.java).notify(1, buildNotification())
               }
 
@@ -286,20 +486,27 @@ jobs:
                   return Notification.Builder(this, CH)
                       .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                       .setContentTitle("Pool Aim")
-                      .setContentText(if (locked) "Locked - taps game tak" else "Editing")
+                      .setContentText(if (locked) "Locked - game khelo" else "Editing")
                       .setOngoing(true)
                       .addAction(Notification.Action.Builder(null, "Unlock", pi).build())
                       .build()
               }
 
               override fun onDestroy() {
+                  runCatching { reader?.close() }
+                  runCatching { display?.release() }
+                  runCatching { projection?.stop() }
                   view?.let { runCatching { wm.removeView(it) } }
+                  runCatching { thread?.quitSafely() }
                   super.onDestroy()
               }
 
               companion object {
+                  const val ACTION_START = "com.venice.poolaim.START"
+                  const val ACTION_UNLOCK = "com.venice.poolaim.UNLOCK"
+                  const val EXTRA_CODE = "code"
+                  const val EXTRA_DATA = "data"
                   private const val CH = "overlay"
-                  private const val ACTION_UNLOCK = "com.venice.poolaim.UNLOCK"
               }
           }
           EOF
@@ -329,20 +536,33 @@ jobs:
 
               var onExit: (() -> Unit)? = null
               var onLock: (() -> Unit)? = null
+              var locked = false
 
               private enum class Mode { CALIBRATE, AIM }
               private enum class Drag { NONE, TL, TR, BL, BR, BALL, AIM }
 
-              private inner class Ball(var fx: Float, var fy: Float, colorInt: Int, val label: String) {
+              private inner class Ball(var fx: Float, var fy: Float, var colorIdx: Int) {
                   var angle = 0f
-                  val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                      style = Paint.Style.FILL
-                      color = colorInt
-                  }
+                  var misses = 0
+                  val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
                   val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                       style = Paint.Style.STROKE
                       strokeWidth = 2.5f * d
-                      color = colorInt
+                      alpha = 235
+                  }
+                  val ghost = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                      style = Paint.Style.STROKE
+                      strokeWidth = 2f * d
+                      alpha = 220
+                  }
+                  init { recolor(colorIdx) }
+
+                  fun recolor(idx: Int) {
+                      colorIdx = idx
+                      val c = palette[idx]
+                      fill.color = c
+                      line.color = c
+                      ghost.color = c
                   }
               }
 
@@ -352,6 +572,7 @@ jobs:
               private var selected: Ball? = null
 
               private var mode = Mode.CALIBRATE
+              private var auto = true
               private var showFan = true
               private var drag = Drag.NONE
               private var pressedBtn = -1
@@ -361,6 +582,7 @@ jobs:
               private val pocketR: Float get() = ballR * 1.9f
 
               private val btnCal = RectF()
+              private val btnAuto = RectF()
               private val btnFan = RectF()
               private val btnExit = RectF()
               private val btnLock = RectF()
@@ -403,12 +625,9 @@ jobs:
                   color = Color.WHITE; textSize = 10f * d; textAlign = Paint.Align.CENTER
                   isFakeBoldText = true
               }
-              private val pCall = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  color = Color.parseColor("#FFFFD24A"); textSize = 15f * d
-                  textAlign = Paint.Align.CENTER; isFakeBoldText = true
-              }
 
               private val palette = intArrayOf(
+                  Color.WHITE,
                   Color.parseColor("#FFEB3B"), Color.parseColor("#1E88E5"),
                   Color.parseColor("#E53935"), Color.parseColor("#8E24AA"),
                   Color.parseColor("#FB8C00"), Color.parseColor("#43A047"),
@@ -423,40 +642,18 @@ jobs:
                       tableFrac.right * w, tableFrac.bottom * h
                   )
 
-                  val bh = 42 * d
-                  btnCal.set(8 * d, 8 * d, 8 * d + 92 * d, 8 * d + bh)
-                  btnFan.set(btnCal.right + 6 * d, 8 * d, btnCal.right + 6 * d + 66 * d, 8 * d + bh)
-                  btnExit.set(btnFan.right + 6 * d, 8 * d, btnFan.right + 6 * d + 46 * d, 8 * d + bh)
+                  val bh = 40 * d
+                  btnCal.set(8 * d, 8 * d, 8 * d + 86 * d, 8 * d + bh)
+                  btnAuto.set(btnCal.right + 6 * d, 8 * d, btnCal.right + 6 * d + 66 * d, 8 * d + bh)
+                  btnFan.set(btnAuto.right + 6 * d, 8 * d, btnAuto.right + 6 * d + 56 * d, 8 * d + bh)
+                  btnExit.set(btnFan.right + 6 * d, 8 * d, btnFan.right + 6 * d + 44 * d, 8 * d + bh)
                   btnLock.set(w - 8 * d - 76 * d, 8 * d, w - 8 * d, 8 * d + bh)
                   val cy = h - 58 * d
                   btnMinus.set(w / 2f - 104 * d, cy - 21 * d, w / 2f - 60 * d, cy + 21 * d)
                   btnPlus.set(w / 2f + 60 * d, cy - 21 * d, w / 2f + 104 * d, cy + 21 * d)
 
-                  if (balls.isEmpty()) seedBalls()
                   clampAll()
                   invalidate()
-              }
-
-              private fun seedBalls() {
-                  for (i in 0 until 12) {
-                      val c = i % 4
-                      val r = i / 4
-                      val tx = 0.22f + c * 0.19f
-                      val ty = 0.24f + r * 0.17f
-                      balls.add(Ball(
-                          tableFrac.left + tx * tableFrac.width(),
-                          tableFrac.top + ty * tableFrac.height(),
-                          palette[i],
-                          (i + 1).toString()
-                      ))
-                  }
-                  balls.add(Ball(
-                      tableFrac.left + 0.5f * tableFrac.width(),
-                      tableFrac.top + 0.86f * tableFrac.height(),
-                      Color.WHITE,
-                      "C"
-                  ))
-                  selected = balls.last()
               }
 
               private fun px(b: Ball) = PointF(b.fx * width, b.fy * height)
@@ -465,10 +662,6 @@ jobs:
                   PointF(table.left, table.top), PointF(table.right, table.top),
                   PointF(table.left, table.bottom), PointF(table.right, table.bottom),
                   PointF(table.left, table.centerY()), PointF(table.right, table.centerY())
-              )
-
-              private val pocketNames = arrayOf(
-                  "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Left-Side", "Right-Side"
               )
 
               private fun distToSeg(p: PointF, a: PointF, b: PointF): Float {
@@ -534,12 +727,96 @@ jobs:
                   for (b in balls) clampBall(b)
               }
 
+              private fun clearPath(a: PointF, b: PointF, skip: Ball?): Boolean {
+                  for (o in balls) {
+                      if (o === skip) continue
+                      if (distToSeg(px(o), a, b) < ballR * 2.0f) return false
+                  }
+                  return true
+              }
+
+              private fun computeAims() {
+                  val pk = pockets()
+                  val cue = balls.firstOrNull { it.colorIdx == 0 }
+                  for (b in balls) {
+                      val bp = px(b)
+                      if (b === cue) {
+                          var bestA = b.angle
+                          var bestS = Float.MAX_VALUE
+                          for (t in balls) {
+                              if (t === cue) continue
+                              val tp = px(t)
+                              var pocket: PointF? = null
+                              var pd = Float.MAX_VALUE
+                              for (p in pk) {
+                                  if (!clearPath(tp, p, t)) continue
+                                  val dd = hypot(p.x - tp.x, p.y - tp.y)
+                                  if (dd < pd) { pd = dd; pocket = p }
+                              }
+                              if (pocket == null) continue
+                              val dirX = (pocket.x - tp.x) / pd
+                              val dirY = (pocket.y - tp.y) / pd
+                              val gx = tp.x - dirX * ballR * 2f
+                              val gy = tp.y - dirY * ballR * 2f
+                              val gp = PointF(gx, gy)
+                              if (!clearPath(bp, gp, cue)) continue
+                              val s = hypot(gx - bp.x, gy - bp.y) + pd
+                              if (s < bestS) { bestS = s; bestA = atan2(gy - bp.y, gx - bp.x) }
+                          }
+                          b.angle = bestA
+                      } else {
+                          var bestA = b.angle
+                          var pd = Float.MAX_VALUE
+                          for (p in pk) {
+                              if (!clearPath(bp, p, b)) continue
+                              val dd = hypot(p.x - bp.x, p.y - bp.y)
+                              if (dd < pd) { pd = dd; bestA = atan2(p.y - bp.y, p.x - bp.x) }
+                          }
+                          b.angle = bestA
+                      }
+                  }
+              }
+
+              fun applyDetected(found: List<Detector.Det>) {
+                  if (!auto || width == 0) return
+                  val used = BooleanArray(found.size)
+                  val it = balls.iterator()
+                  while (it.hasNext()) {
+                      val b = it.next()
+                      var bi = -1
+                      var bd = Float.MAX_VALUE
+                      for (i in found.indices) {
+                          if (used[i]) continue
+                          val dd = hypot(found[i].fx * width - b.fx * width,
+                                         found[i].fy * height - b.fy * height)
+                          if (dd < bd) { bd = dd; bi = i }
+                      }
+                      if (bi >= 0 && bd < ballR * 3f) {
+                          used[bi] = true
+                          b.fx = found[bi].fx
+                          b.fy = found[bi].fy
+                          b.misses = 0
+                          if (b.colorIdx != found[bi].color) b.recolor(found[bi].color)
+                      } else {
+                          b.misses++
+                          if (b.misses > 3) it.remove()
+                      }
+                  }
+                  for (i in found.indices) {
+                      if (used[i]) continue
+                      balls.add(Ball(found[i].fx, found[i].fy, found[i].color))
+                  }
+                  clampAll()
+                  computeAims()
+                  invalidate()
+              }
+
               override fun onDraw(canvas: Canvas) {
                   canvas.drawRect(table, pFrame)
                   val pk = pockets()
 
                   val sel = selected
-                  if (showFan && mode == Mode.AIM && sel != null) {
+                  if (showFan && mode == Mode.AIM && sel != null && !locked && !auto) {
                       val sp = px(sel)
                       for (k in -3..3) {
                           if (k == 0) continue
@@ -554,10 +831,14 @@ jobs:
                   var hitPocket = -1
                   for (b in balls) {
                       val bp = px(b)
-                      val res = trace(bp.x, bp.y, cos(b.angle), sin(b.angle), 3)
+                      val res = trace(bp.x, bp.y, cos(b.angle), sin(b.angle), 4)
                       val path = Path()
                       res.first.forEachIndexed { i, p -> if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y) }
                       canvas.drawPath(path, b.line)
+                      if (res.second < 0) {
+                          val end = res.first.lastOrNull()
+                          if (end != null) canvas.drawCircle(end.x, end.y, ballR, b.ghost)
+                      }
                       if (b === sel) hitPocket = res.second
                   }
 
@@ -569,26 +850,26 @@ jobs:
                       val bp = px(b)
                       canvas.drawCircle(bp.x, bp.y, ballR, b.fill)
                       if (b === sel) canvas.drawCircle(bp.x, bp.y, ballR + 2f * d, pSel)
-                      canvas.drawText(b.label, bp.x, bp.y + 3.5f * d, pNum)
+                      val label = if (b.colorIdx == 0) "C" else if (b.colorIdx <= 8) b.colorIdx.toString() else "+"
+                      canvas.drawText(label, bp.x, bp.y + 3.5f * d, pNum)
                   }
 
-                  if (sel != null) {
+                  if (sel != null && !locked && !auto) {
                       val sp = px(sel)
                       val hx = sp.x + cos(sel.angle) * ballR * 3.2f
                       val hy = sp.y + sin(sel.angle) * ballR * 3.2f
                       canvas.drawCircle(hx, hy, ballR * 0.55f, pHandle)
                   }
 
-                  if (hitPocket >= 0) {
-                      canvas.drawText(pocketNames[hitPocket], width / 2f, height - 96 * d, pCall)
+                  if (!locked) {
+                      drawBtn(canvas, btnCal, if (mode == Mode.AIM) "AIM" else "CALIB", mode == Mode.AIM)
+                      drawBtn(canvas, btnAuto, "AUTO", auto)
+                      drawBtn(canvas, btnFan, "FAN", showFan)
+                      drawBtn(canvas, btnExit, "X", false)
+                      drawBtn(canvas, btnLock, "LOCK", false)
+                      drawBtn(canvas, btnMinus, "-", false)
+                      drawBtn(canvas, btnPlus, "+", false)
                   }
-
-                  drawBtn(canvas, btnCal, if (mode == Mode.AIM) "AIM" else "CALIB", mode == Mode.AIM)
-                  drawBtn(canvas, btnFan, "FAN", showFan)
-                  drawBtn(canvas, btnExit, "X", false)
-                  drawBtn(canvas, btnLock, "LOCK", false)
-                  drawBtn(canvas, btnMinus, "-", false)
-                  drawBtn(canvas, btnPlus, "+", false)
               }
 
               private fun drawBtn(canvas: Canvas, r: RectF, label: String, on: Boolean) {
@@ -597,7 +878,7 @@ jobs:
               }
 
               private fun hitBtn(x: Float, y: Float): Int {
-                  val rects = listOf(btnCal, btnFan, btnExit, btnLock, btnMinus, btnPlus)
+                  val rects = listOf(btnCal, btnAuto, btnFan, btnExit, btnLock, btnMinus, btnPlus)
                   for (i in rects.indices) if (rects[i].contains(x, y)) return i
                   return -1
               }
@@ -660,7 +941,7 @@ jobs:
                           resync()
                       }
                       Drag.BALL -> {
-                          selected?.let { it.fx = fx; it.fy = fy; clampBall(it) }
+                          selected?.let { it.fx = fx; it.fy = fy; it.misses = 0; clampBall(it) }
                       }
                       Drag.AIM -> {
                           val s = selected ?: return
@@ -681,6 +962,7 @@ jobs:
 
               @SuppressLint("ClickableViewAccessibility")
               override fun onTouchEvent(e: MotionEvent): Boolean {
+                  if (locked) return true
                   when (e.actionMasked) {
                       MotionEvent.ACTION_DOWN -> {
                           pressedBtn = hitBtn(e.x, e.y)
@@ -703,11 +985,15 @@ jobs:
               private fun onButton(b: Int) {
                   when (b) {
                       0 -> mode = if (mode == Mode.CALIBRATE) Mode.AIM else Mode.CALIBRATE
-                      1 -> showFan = !showFan
-                      2 -> onExit?.invoke()
-                      3 -> if (mode == Mode.AIM) onLock?.invoke()
-                      4 -> selected?.let { it.angle -= 0.01f }
-                      5 -> selected?.let { it.angle += 0.01f }
+                      1 -> {
+                          auto = !auto
+                          if (!auto) balls.clear()
+                      }
+                      2 -> showFan = !showFan
+                      3 -> onExit?.invoke()
+                      4 -> if (mode == Mode.AIM) onLock?.invoke()
+                      5 -> selected?.let { it.angle -= 0.01f }
+                      6 -> selected?.let { it.angle += 0.01f }
                   }
                   invalidate()
               }
